@@ -12,7 +12,11 @@ import (
 	"encoding/pem"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -28,6 +32,12 @@ func TestCreateInstallationToken(t *testing.T) {
 		}
 		if !strings.HasPrefix(r.Header.Get("Authorization"), "Bearer ") {
 			t.Fatal("request did not include a bearer token")
+		}
+		if got := r.Header.Get("Accept"); got != "application/vnd.github+json" {
+			t.Errorf("Accept = %q", got)
+		}
+		if got := r.Header.Get("X-GitHub-Api-Version"); got != "2022-11-28" {
+			t.Errorf("X-GitHub-Api-Version = %q", got)
 		}
 		_, _ = w.Write([]byte(`{"token":"ghs_test_token"}`))
 	}))
@@ -120,6 +130,187 @@ func TestClientRejectsTokenThatExpiresTooSoon(t *testing.T) {
 	}
 }
 
+func TestClientConcurrentRefreshesUseOneRequest(t *testing.T) {
+	key := testKey(t)
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		time.Sleep(25 * time.Millisecond)
+		_, _ = w.Write([]byte(`{"token":"ghs_shared_token","expires_at":"2099-01-01T00:00:00Z"}`))
+	}))
+	defer server.Close()
+	client, err := NewClient(ClientConfig{
+		TokenRequest: TokenRequest{AppID: "123", InstallationID: "42", PrivateKey: key, APIURL: server.URL},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	const callers = 20
+	tokens := make(chan string, callers)
+	errs := make(chan error, callers)
+	var group sync.WaitGroup
+	for range callers {
+		group.Add(1)
+		go func() {
+			defer group.Done()
+			token, err := client.Token(context.Background())
+			if err != nil {
+				errs <- err
+				return
+			}
+			tokens <- token
+		}()
+	}
+	group.Wait()
+	close(tokens)
+	close(errs)
+	for err := range errs {
+		t.Fatal(err)
+	}
+	for token := range tokens {
+		if token != "ghs_shared_token" {
+			t.Fatalf("token = %q", token)
+		}
+	}
+	if got := requests.Load(); got != 1 {
+		t.Fatalf("requests = %d, want 1", got)
+	}
+}
+
+func TestClientWaitingCallerHonorsContext(t *testing.T) {
+	key := testKey(t)
+	started := make(chan struct{})
+	release := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		close(started)
+		<-release
+		_, _ = w.Write([]byte(`{"token":"ghs_token","expires_at":"2099-01-01T00:00:00Z"}`))
+	}))
+	defer server.Close()
+	client, err := NewClient(ClientConfig{
+		TokenRequest: TokenRequest{AppID: "123", InstallationID: "42", PrivateKey: key, APIURL: server.URL},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstDone := make(chan error, 1)
+	go func() {
+		_, err := client.Token(context.Background())
+		firstDone <- err
+	}()
+	<-started
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := client.Token(ctx); err != context.Canceled {
+		t.Fatalf("Token() error = %v, want context.Canceled", err)
+	}
+	close(release)
+	if err := <-firstDone; err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestClientRefreshAndInvalidate(t *testing.T) {
+	key := testKey(t)
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		number := requests.Add(1)
+		_, _ = w.Write([]byte(`{"token":"ghs_token_` + strconv.FormatInt(int64(number), 10) + `","expires_at":"2099-01-01T00:00:00Z"}`))
+	}))
+	defer server.Close()
+	client, err := NewClient(ClientConfig{
+		TokenRequest: TokenRequest{AppID: "123", InstallationID: "42", PrivateKey: key, APIURL: server.URL},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := client.Token(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	client.Invalidate()
+	second, err := client.Token(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first == second || requests.Load() != 2 {
+		t.Fatalf("tokens = %q, %q; requests = %d", first, second, requests.Load())
+	}
+	if _, err := client.Refresh(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if requests.Load() != 3 {
+		t.Fatalf("requests = %d, want 3", requests.Load())
+	}
+}
+
+func TestCreateInstallationTokenErrors(t *testing.T) {
+	key := testKey(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "permission denied", http.StatusForbidden)
+	}))
+	defer server.Close()
+	_, err := CreateInstallationToken(context.Background(), TokenRequest{
+		AppID: "123", InstallationID: "42", PrivateKey: key, APIURL: server.URL,
+	})
+	if err == nil || !strings.Contains(err.Error(), "403") || !strings.Contains(err.Error(), "permission denied") {
+		t.Fatalf("CreateInstallationToken() error = %v", err)
+	}
+}
+
+func TestClientRefreshesExpiredToken(t *testing.T) {
+	key := testKey(t)
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		number := requests.Add(1)
+		expiresAt := "2000-01-01T00:00:00Z"
+		if number > 1 {
+			expiresAt = "2099-01-01T00:00:00Z"
+		}
+		_, _ = w.Write([]byte(`{"token":"ghs_token","expires_at":"` + expiresAt + `"}`))
+	}))
+	defer server.Close()
+	client, err := NewClient(ClientConfig{
+		TokenRequest:  TokenRequest{AppID: "123", InstallationID: "42", PrivateKey: key, APIURL: server.URL},
+		RefreshBefore: 0,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.Token(context.Background()); err == nil {
+		t.Fatal("Token() accepted expired token")
+	}
+	if token, err := client.Token(context.Background()); err != nil || token != "ghs_token" {
+		t.Fatalf("Token() = %q, %v", token, err)
+	}
+	if requests.Load() != 2 {
+		t.Fatalf("requests = %d, want 2", requests.Load())
+	}
+}
+
+func TestNewClientValidation(t *testing.T) {
+	key := testKey(t)
+	tests := []struct {
+		name   string
+		config ClientConfig
+		want   string
+	}{
+		{"missing app ID", ClientConfig{TokenRequest: TokenRequest{InstallationID: "42", PrivateKey: key}}, "app ID"},
+		{"missing installation ID", ClientConfig{TokenRequest: TokenRequest{AppID: "123", PrivateKey: key}}, "installation ID"},
+		{"missing private key", ClientConfig{TokenRequest: TokenRequest{AppID: "123", InstallationID: "42"}}, "private key"},
+		{"negative refresh window", ClientConfig{TokenRequest: TokenRequest{AppID: "123", InstallationID: "42", PrivateKey: key}, RefreshBefore: -time.Second}, "refresh-before"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := NewClient(test.config)
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("NewClient() error = %v, want %q", err, test.want)
+			}
+		})
+	}
+}
+
 func TestCreateJWT(t *testing.T) {
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
@@ -155,13 +346,49 @@ func TestCreateJWT(t *testing.T) {
 }
 
 func TestParsePrivateKey(t *testing.T) {
-	key, err := rsa.GenerateKey(rand.Reader, 2048)
-	if err != nil {
-		t.Fatal(err)
-	}
+	key := testKey(t)
 	pemKey := pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)})
 	loaded, err := ParsePrivateKey(string(pemKey))
 	if err != nil || loaded.N.Cmp(key.N) != 0 {
 		t.Fatalf("ParsePrivateKey() failed: %v", err)
 	}
+}
+
+func TestParsePrivateKeyPKCS8AndFile(t *testing.T) {
+	key := testKey(t)
+	pemKey := pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: mustMarshalPKCS8(t, key)})
+	file := t.TempDir() + "/private-key.pem"
+	if err := os.WriteFile(file, pemKey, 0600); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := ParsePrivateKey(file)
+	if err != nil || loaded.N.Cmp(key.N) != 0 {
+		t.Fatalf("ParsePrivateKey() failed: %v", err)
+	}
+}
+
+func TestParsePrivateKeyErrors(t *testing.T) {
+	for _, input := range []string{"not pem", t.TempDir() + "/missing.pem"} {
+		if _, err := ParsePrivateKey(input); err == nil {
+			t.Fatalf("ParsePrivateKey(%q) succeeded", input)
+		}
+	}
+}
+
+func testKey(t *testing.T) *rsa.PrivateKey {
+	t.Helper()
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return key
+}
+
+func mustMarshalPKCS8(t *testing.T, key *rsa.PrivateKey) []byte {
+	t.Helper()
+	data, err := x509.MarshalPKCS8PrivateKey(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return data
 }
