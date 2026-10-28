@@ -104,6 +104,10 @@ git tag v0.1.0
 git push origin v0.1.0
 ```
 
+You can also use the **Release** workflow’s **Run workflow** button in GitHub
+Actions and enter the version. It validates and creates the tag automatically,
+then builds and publishes the release.
+
 The tag starts the [GoReleaser workflow](./.github/workflows/release.yml),
 which builds the CLI for Linux, macOS, and Windows on amd64, arm64, and
 arm where supported, then publishes the archives and checksums to a GitHub
