@@ -2,7 +2,7 @@
 
 ## Development
 
-Use the Go version declared in `go.mod`, then run:
+Use Go 1.23 or newer, then run:
 
 ```sh
 go test ./...
