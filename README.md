@@ -1,11 +1,35 @@
 # github-app-token
 
+[![CI](https://github.com/tongbpm/github-app-token/actions/workflows/run-tests.yaml/badge.svg)](https://github.com/tongbpm/github-app-token/actions/workflows/run-tests.yaml)
+[![Go Reference](https://pkg.go.dev/badge/github.com/tongbpm/github-app-token.svg)](https://pkg.go.dev/github.com/tongbpm/github-app-token)
+[![Go Report Card](https://goreportcard.com/badge/github.com/tongbpm/github-app-token)](https://goreportcard.com/report/github.com/tongbpm/github-app-token)
+[![Latest Release](https://img.shields.io/github/v/release/tongbpm/github-app-token)](https://github.com/tongbpm/github-app-token/releases)
+[![License](https://img.shields.io/github/license/tongbpm/github-app-token)](./LICENSE)
+
 > **AI-assisted code:** This project was developed with assistance from
 > GitHub Copilot. Review and validate it before using it in production.
 
-`github-app-token` creates a GitHub App installation access token. It is
-available as a small Go package, with an optional CLI for local use and CI
-jobs where the token should be written to standard output.
+`github-app-token` is a focused Go package for creating and caching GitHub App
+installation access tokens, with an optional CLI for local use and CI jobs.
+It handles App JWT signing, installation-token exchange, in-memory caching,
+and expiry-aware refresh without becoming a general GitHub API client.
+
+## Install
+
+Import the library:
+
+```sh
+go get github.com/tongbpm/github-app-token
+```
+
+Install the CLI:
+
+```sh
+go install github.com/tongbpm/github-app-token/cmd/github-app-token@latest
+```
+
+Use the library for one-off token requests, or use `githubapptoken.Client` for
+repeated requests so tokens are reused and refreshed automatically.
 
 ## Usage
 
@@ -40,7 +64,7 @@ log them.
 
 ## Go package
 
-The module can also be imported as `githubapptoken`:
+Import the module as `githubapptoken`:
 
 ```go
 package main
@@ -102,11 +126,11 @@ refresh window.
 
 ## Releases and dependency updates
 
-Releases are created by pushing a semantic-version tag such as `v0.1.0`:
+Releases are created by pushing a semantic-version tag such as `v0.3.0`:
 
 ```sh
-git tag v0.1.0
-git push origin v0.1.0
+git tag v0.3.0
+git push origin v0.3.0
 ```
 
 You can also use the **Release** workflow’s **Run workflow** button in GitHub
@@ -119,7 +143,7 @@ arm where supported, then publishes the archives and checksums to a GitHub
 Release. The Go package is installed from:
 
 ```sh
-go install github.com/tongbpm/github-app-token/cmd/github-app-token@v0.1.0
+go install github.com/tongbpm/github-app-token/cmd/github-app-token@v0.2.0
 ```
 
 [Dependabot](./.github/dependabot.yml) checks Go modules and GitHub Actions
