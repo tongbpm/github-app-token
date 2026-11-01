@@ -1,5 +1,8 @@
 # github-app-token
 
+> **AI-assisted code:** This project was developed with assistance from
+> GitHub Copilot. Review and validate it before using it in production.
+
 `github-app-token` creates a GitHub App installation access token. It is
 available as a small Go package, with an optional CLI for local use and CI
 jobs where the token should be written to standard output.
