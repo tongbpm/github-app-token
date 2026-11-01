@@ -9,6 +9,24 @@ persistent token storage.
 The root package is the public Go library. The CLI entry point is
 `cmd/github-app-token`.
 
+## Library usage
+
+Import the module as `githubapptoken`:
+
+```go
+import githubapptoken "github.com/tongbpm/github-app-token"
+```
+
+Use `ParsePrivateKey` with PEM contents or a mounted PEM file, then choose:
+
+- `CreateInstallationToken(ctx, request)` for a one-off token.
+- `NewClient(config)` followed by `client.Token(ctx)` for repeated requests.
+
+Prefer the cached client for repeated API work. It reuses tokens in memory,
+refreshes them before expiry, and coordinates concurrent refreshes. Use
+`client.Refresh(ctx)` after an authentication failure and
+`client.Invalidate()` when the next call must obtain a new token.
+
 ## Security
 
 Never commit, log, print, or persist GitHub App private keys or installation
