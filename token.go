@@ -29,12 +29,18 @@ const defaultRefreshBefore = time.Minute
 // TokenRequest contains the credentials and endpoint used to request an
 // installation access token.
 type TokenRequest struct {
-	AppID          string
+	// AppID is the numeric GitHub App identifier.
+	AppID string
+	// InstallationID is the numeric GitHub App installation identifier.
 	InstallationID string
-	PrivateKey     *rsa.PrivateKey
-	APIURL         string
-	Timeout        time.Duration
-	HTTPClient     *http.Client
+	// PrivateKey is the RSA private key associated with the GitHub App.
+	PrivateKey *rsa.PrivateKey
+	// APIURL is the GitHub API base URL. It defaults to https://api.github.com.
+	APIURL string
+	// Timeout applies when HTTPClient is nil and the package creates the HTTP client.
+	Timeout time.Duration
+	// HTTPClient is an optional client used for the API request.
+	HTTPClient *http.Client
 }
 
 type tokenResponse struct {
@@ -57,6 +63,8 @@ type Client struct {
 // ClientConfig configures a cached installation-token client.
 type ClientConfig struct {
 	TokenRequest
+	// RefreshBefore controls how far before expiry a cached token is refreshed.
+	// Zero uses a one-minute safety window.
 	RefreshBefore time.Duration
 }
 

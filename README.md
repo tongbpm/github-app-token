@@ -31,7 +31,9 @@ The key must be an RSA private key. The command uses the GitHub REST API at
 Enterprise Server URL. Use `--timeout` to change the HTTP request timeout.
 
 The generated app JWT is never printed. Only the installation access token is
-written to standard output; errors are written to standard error.
+written to standard output; errors are written to standard error. Treat the
+private key and returned installation token as secrets and never commit or
+log them.
 
 ## Go package
 
@@ -61,7 +63,7 @@ func main() {
     if err != nil {
         log.Fatal(err)
     }
-    log.Println(token)
+    _ = token
 }
 ```
 
@@ -119,3 +121,12 @@ go install github.com/tongbpm/github-app-token/cmd/github-app-token@v0.1.0
 
 [Dependabot](./.github/dependabot.yml) checks Go modules and GitHub Actions
 weekly and opens update pull requests.
+
+## Support and security
+
+See [CONTRIBUTING.md](./CONTRIBUTING.md) for development and pull request
+guidance. See [SECURITY.md](./SECURITY.md) for credential handling and
+vulnerability reporting.
+
+The package currently supports Go 1.23 and newer. The public API is still
+pre-1.0 and may change between minor releases.
