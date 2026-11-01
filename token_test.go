@@ -10,6 +10,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -259,6 +260,88 @@ func TestCreateInstallationTokenErrors(t *testing.T) {
 	}
 }
 
+func TestCreateInstallationTokenRejectsInvalidAPIURL(t *testing.T) {
+	key := testKey(t)
+	for _, apiURL := range []string{"not a URL", "://missing-scheme"} {
+		t.Run(apiURL, func(t *testing.T) {
+			_, err := CreateInstallationToken(context.Background(), TokenRequest{
+				AppID: "123", InstallationID: "42", PrivateKey: key, APIURL: apiURL,
+			})
+			if err == nil || !strings.Contains(err.Error(), "invalid API URL") {
+				t.Fatalf("CreateInstallationToken() error = %v", err)
+			}
+		})
+	}
+}
+
+func TestClientRejectsMalformedExpiration(t *testing.T) {
+	key := testKey(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"token":"ghs_token","expires_at":"not-a-timestamp"}`))
+	}))
+	defer server.Close()
+	client, err := NewClient(ClientConfig{
+		TokenRequest: TokenRequest{AppID: "123", InstallationID: "42", PrivateKey: key, APIURL: server.URL},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.Token(context.Background()); err == nil || !strings.Contains(err.Error(), "parse token expiration") {
+		t.Fatalf("Token() error = %v", err)
+	}
+}
+
+func TestCreateInstallationTokenHonorsContextCancellation(t *testing.T) {
+	key := testKey(t)
+	started := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		close(started)
+		<-r.Context().Done()
+	}))
+	defer server.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	errs := make(chan error, 1)
+	go func() {
+		_, err := CreateInstallationToken(ctx, TokenRequest{
+			AppID: "123", InstallationID: "42", PrivateKey: key, APIURL: server.URL,
+		})
+		errs <- err
+	}()
+	<-started
+	cancel()
+	if err := <-errs; err == nil || !strings.Contains(err.Error(), "request installation token") {
+		t.Fatalf("CreateInstallationToken() error = %v", err)
+	}
+}
+
+func TestCreateInstallationTokenUsesCustomHTTPClient(t *testing.T) {
+	key := testKey(t)
+	var requests atomic.Int32
+	client := &http.Client{
+		Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			requests.Add(1)
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Status:     "200 OK",
+				Body:       io.NopCloser(strings.NewReader(`{"token":"ghs_custom_client_token"}`)),
+				Header:     make(http.Header),
+				Request:    r,
+			}, nil
+		}),
+	}
+	token, err := CreateInstallationToken(context.Background(), TokenRequest{
+		AppID: "123", InstallationID: "42", PrivateKey: key,
+		APIURL: "https://example.test", HTTPClient: client,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if token != "ghs_custom_client_token" || requests.Load() != 1 {
+		t.Fatalf("token = %q, requests = %d", token, requests.Load())
+	}
+}
+
 func TestClientRefreshesExpiredToken(t *testing.T) {
 	key := testKey(t)
 	var requests atomic.Int32
@@ -391,4 +474,10 @@ func mustMarshalPKCS8(t *testing.T, key *rsa.PrivateKey) []byte {
 		t.Fatal(err)
 	}
 	return data
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) {
+	return f(r)
 }
