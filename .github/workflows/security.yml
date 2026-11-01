@@ -44,5 +44,5 @@ jobs:
 
       - name: Check dependency licenses
         run: |
-          go install github.com/google/go-licenses@latest
+          go install github.com/google/go-licenses/v2@v2.0.1
           go-licenses check ./... --disallowed_types=forbidden,unknown
